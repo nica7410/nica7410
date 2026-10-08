@@ -49,6 +49,7 @@ def fetch_days(days):
                     raise RuntimeError(str(payload.get("errors", "Missing user")))
                 for i, day in enumerate(batch):
                     result[day.isoformat()] = payload["data"]["user"][f"d{i}"]["totalCommitContributions"]
+                time.sleep(0.7)  # Respect GitHub API secondary rate limits.
                 break
             except Exception:
                 if attempt == 2:
