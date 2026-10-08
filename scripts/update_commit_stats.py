@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Update commit-only stats using GitHub's contributionsCollection API."""
+"""Generate a GitHub-style calendar containing only commit contributions."""
 import datetime as dt
-import html
 import json
 import os
 from pathlib import Path
@@ -10,91 +9,103 @@ from urllib.request import Request, urlopen
 USER = "nica7410"
 today = dt.datetime.now(dt.timezone.utc).date()
 year = today.year
-start = dt.date(year, 1, 1)
-end = min(today + dt.timedelta(days=1), dt.date(year + 1, 1, 1))
-windows = []
-cursor = start
-while cursor < end:
-    next_day = min(cursor + dt.timedelta(days=7), end)
-    windows.append((cursor, next_day))
-    cursor = next_day
+first = dt.date(year, 1, 1)
+days = [first + dt.timedelta(days=i) for i in range((today - first).days + 1)]
+counts = {}
 
-# One date-scoped GraphQL collection per week: issues and PRs never enter counts.
-parts = [
-    f'w{i}: contributionsCollection(from: "{a}T00:00:00Z", '
-    f'to: "{b}T00:00:00Z") {{ totalCommitContributions }}'
-    for i, (a, b) in enumerate(windows)
-]
-query = 'query { user(login: "' + USER + '") { ' + ' '.join(parts) + ' } }'
-request = Request(
-    "https://api.github.com/graphql",
-    data=json.dumps({"query": query}).encode(),
-    headers={
-        "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-        "Content-Type": "application/json",
-        "User-Agent": "profile-commit-only-stats",
-    },
-)
-with urlopen(request, timeout=60) as result:
-    response = json.load(result)
-if response.get("errors"):
-    raise RuntimeError(str(response["errors"]))
-data = response["data"]["user"]
-counts = [data[f"w{i}"]["totalCommitContributions"] for i in range(len(windows))]
-total = sum(counts)
-
-# A compact, static SVG, committed alongside the README.
-width, height, left, top, chart_height = 960, 215, 48, 43, 110
-chart_width = 850
-slot = chart_width / max(len(windows), 1)
-maximum = max(counts, default=0) or 1
-bars = []
-for i, ((a, b), count) in enumerate(zip(windows, counts)):
-    h = count / maximum * chart_height
-    bars.append(
-        f'<rect x="{left+i*slot:.2f}" y="{top+chart_height-h:.2f}" '
-        f'width="{max(slot-3, 2):.2f}" height="{h:.2f}" rx="2" fill="#238636">'
-        f'<title>{a} - {b-dt.timedelta(days=1)}: {count} commits</title></rect>'
+# The built-in contributionCalendar also includes issues and PRs.
+# Query daily totalCommitContributions instead, in small batches.
+for offset in range(0, len(days), 25):
+    batch = days[offset:offset + 25]
+    aliases = [
+        f'd{i}: contributionsCollection(from: "{day}T00:00:00Z", '
+        f'to: "{day}T23:59:59Z") {{ totalCommitContributions }}'
+        for i, day in enumerate(batch)
+    ]
+    query = 'query { user(login: "' + USER + '") { ' + ' '.join(aliases) + ' } }'
+    request = Request(
+        "https://api.github.com/graphql",
+        data=json.dumps({"query": query}).encode(),
+        headers={
+            "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+            "Content-Type": "application/json",
+            "User-Agent": "commit-only-calendar",
+        },
+        method="POST",
     )
-labels = []
+    with urlopen(request, timeout=60) as response:
+        payload = json.load(response)
+    if payload.get("errors") or not payload.get("data", {}).get("user"):
+        raise RuntimeError("GraphQL query failed: " + str(payload.get("errors")))
+    for i, day in enumerate(batch):
+        counts[day] = payload["data"]["user"][f"d{i}"]["totalCommitContributions"]
+
+total = sum(counts.values())
+maximum = max(counts.values(), default=0)
+# Five GitHub-like levels, including the empty level.
+palette = ("#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39")
+
+def level(count):
+    if count == 0:
+        return 0
+    return min(4, 1 + (count * 4 - 1) // max(maximum, 1))
+
+# Sunday is the first row, matching the GitHub calendar.
+base = first - dt.timedelta(days=(first.weekday() + 1) % 7)
+cell, gap, left, top = 11, 3, 44, 42
+step = cell + gap
+weeks = ((today - base).days // 7) + 1
+width, height = left + weeks * step + 18, 190
+rects = []
+for day in days:
+    column = (day - base).days // 7
+    row = (day.weekday() + 1) % 7
+    x, y = left + column * step, top + row * step
+    number = counts[day]
+    rects.append(
+        f'<rect x="{x}" y="{y}" width="{cell}" height="{cell}" rx="2" '
+        f'fill="{palette[level(number)]}">'
+        f'<title>{day.isoformat()}: {number} commits</title></rect>'
+    )
+months = []
 for month in range(1, 13):
-    day = dt.date(year, month, 1)
-    if day >= end:
+    date = dt.date(year, month, 1)
+    if date > today:
         break
-    x = left + (day - start).days / 7 * slot
-    labels.append(
-        f'<text x="{x:.1f}" y="174" font-size="12" fill="#57606a">'
-        f'{html.escape(day.strftime("%b"))}</text>'
+    column = (date - base).days // 7
+    months.append(
+        f'<text x="{left+column*step}" y="33" font-size="11" '
+        f'fill="#57606a">{date.strftime("%b")}</text>'
     )
+weekdays = [
+    f'<text x="7" y="{top+row*step+9}" font-size="10" fill="#57606a">{label}</text>'
+    for row, label in ((1, "Mon"), (3, "Wed"), (5, "Fri"))
+]
 svg = (
     f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
     f'viewBox="0 0 {width} {height}" role="img" '
-    f'aria-label="{year}: {total} commit contributions">'
-    '<rect width="100%" height="100%" fill="white"/>'
-    f'<text x="{left}" y="25" font-family="sans-serif" font-size="18" '
-    f'fill="#24292f" font-weight="bold">{year} commit contributions: {total:,}</text>'
-    f'<line x1="{left}" y1="{top+chart_height}" x2="{left+chart_width}" '
-    f'y2="{top+chart_height}" stroke="#d0d7de"/>'
-    + ''.join(bars) + ''.join(labels) +
-    f'<text x="{left}" y="201" font-size="12" fill="#57606a">'
-    'Weekly GitHub-recognized commit contributions; issues and PRs excluded.'
+    f'aria-label="{year} commit-only calendar with {total} contributions">'
+    f'<text x="{left}" y="17" font-family="Arial,sans-serif" font-size="15" '
+    f'font-weight="bold" fill="#24292f">{year}: {total:,} commit contributions</text>'
+    + ''.join(months) + ''.join(weekdays) + ''.join(rects) +
+    f'<text x="{left}" y="157" font-size="11" fill="#57606a">'
+    'Only GitHub-recognized commits; excludes issues, PRs, reviews.'
     '</text></svg>'
 )
 Path("assets").mkdir(exist_ok=True)
 Path("assets/commit-activity.svg").write_text(svg, encoding="utf-8")
 
-readme_file = Path("README.md")
-readme = readme_file.read_text(encoding="utf-8")
-begin, finish = "<!-- COMMITS_START -->", "<!-- COMMITS_END -->"
-if begin not in readme or finish not in readme:
-    raise ValueError("README is missing commit section markers")
+path = Path("README.md")
+readme = path.read_text(encoding="utf-8")
+begin, end = "<!-- COMMITS_START -->", "<!-- COMMITS_END -->"
+if begin not in readme or end not in readme:
+    raise ValueError("README commit section markers missing")
 section = (
     begin + "\n"
-    + f"**{year} commit contributions: {total:,}** "
-      f"(updated {today} UTC)\n\n"
-    + "![Commit-only activity](assets/commit-activity.svg)\n"
-    + finish
+    + f"**{year} commit contributions: {total:,}** (updated {today} UTC)\n\n"
+    + "![Commit-only contribution calendar](assets/commit-activity.svg)\n"
+    + end
 )
-readme = readme[:readme.index(begin)] + section + readme[readme.index(finish)+len(finish):]
-readme_file.write_text(readme, encoding="utf-8")
-print(f"Updated {year} commit-only contributions: {total}")
+readme = readme[:readme.index(begin)] + section + readme[readme.index(end)+len(end):]
+path.write_text(readme, encoding="utf-8")
+print(f"Generated {year} commit-only calendar: {total} commits")
