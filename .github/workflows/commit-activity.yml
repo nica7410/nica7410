@@ -15,8 +15,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Generate commit-only contribution stats
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 scripts/update_commit_stats.py
+          GH_TOKEN: ${{ secrets.GH_STATS_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Repository secret GH_STATS_TOKEN is missing. Create a classic PAT with read:user scope and add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          python3 scripts/update_commit_stats.py
       - name: Publish updated stats
         run: |
           git config user.name "github-actions[bot]"
