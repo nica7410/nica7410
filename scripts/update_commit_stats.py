@@ -10,10 +10,13 @@ from urllib.request import Request, urlopen
 
 USER = "nica7410"
 FIRST_YEAR = 2020
+CACHE_VERSION = 2  # Rebuild old history after switching to private-aware credentials.
 TODAY = dt.datetime.now(dt.timezone.utc).date()
 YEAR = TODAY.year
 DATA_DIR = Path("assets/commit-years")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+if not os.environ.get("GH_TOKEN"):
+    raise RuntimeError("Missing GH_TOKEN: configure GH_STATS_TOKEN secret with read:user scope.")
 COLOR = ("#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39")
 
 
@@ -119,12 +122,13 @@ for year in range(YEAR, FIRST_YEAR - 1, -1):
     first = dt.date(year, 1, 1)
     last = min(TODAY, dt.date(year, 12, 31))
     cache = DATA_DIR / f"{year}.json"
-    if year < YEAR and cache.exists():
+    if year < YEAR and cache.exists() and (DATA_DIR / f"{year}.cache-version").exists() and (DATA_DIR / f"{year}.cache-version").read_text().strip() == str(CACHE_VERSION):
         saved = json.loads(cache.read_text(encoding="utf-8"))
     else:
         days = [first + dt.timedelta(days=i) for i in range((last - first).days + 1)]
         saved = fetch_days(days)
         cache.write_text(json.dumps(saved, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        (DATA_DIR / f"{year}.cache-version").write_text(str(CACHE_VERSION) + "\n", encoding="utf-8")
     svg, total = build_svg(year, saved)
     (DATA_DIR / f"{year}.svg").write_text(svg, encoding="utf-8")
     years[year] = total
